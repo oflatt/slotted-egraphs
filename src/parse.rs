@@ -74,6 +74,12 @@ fn tokenize(mut s: &str) -> Result<Vec<Token>, ParseError> {
             let (op, rst) = crop_ident(&s[1..])?;
             tokens.push(Token::PVar(op.to_string()));
             s = rst;
+        } else if s.starts_with("$?") {
+            // a FLEXIBLE slot, see `MultiPattern::flexible`. The `?` is kept in the name so
+            // that `$?x` and `$x` are different slots and the spelling round-trips.
+            let (op, rst) = crop_ident(&s[2..])?;
+            tokens.push(Token::Slot(Slot::named(&format!("?{op}"))));
+            s = rst;
         } else if s.starts_with('$') {
             let (op, rst) = crop_ident(&s[1..])?;
             tokens.push(Token::Slot(Slot::named(op)));
@@ -109,10 +115,16 @@ impl<L: Language> RecExpr<L> {
     }
 }
 
+/// Whether a slot was written `$?x`, which marks it flexible in a `MultiPattern`.
+fn flexible_marker(s: Slot) -> bool {
+    s.to_string().starts_with("$?")
+}
+
 impl<L: Language> MultiPattern<L> {
     // "?a == pat, ?b == pat, ..."
     pub fn parse(s: &str) -> Result<Self, ParseError> {
         let mut out = Vec::new();
+        let mut flexible = HashSet::default();
         for x in s.split(",") {
             let x = x.trim();
             if x.is_empty() { continue }
@@ -127,9 +139,10 @@ impl<L: Language> MultiPattern<L> {
                 let Pattern::PVar(xx) = x else { panic!("child {x} isn't a PVar") };
                 xx
             }).collect();
+            flexible.extend(n.all_slot_occurrences().into_iter().filter(|s| flexible_marker(*s)));
             out.push((v, n, children));
         }
-        Ok(MultiPattern { pats: out })
+        Ok(MultiPattern { pats: out, flexible })
     }
 }
 
