@@ -238,3 +238,32 @@ fn multipat_matches_every_symmetric_reading() {
     let goal_id = eg.add_expr(RecExpr::parse(goal).unwrap());
     assert!(eg.eq(&start, &goal_id));
 }
+
+#[test]
+// Rudi's `unify-redundant-and-symmetric-appid`: the body `?a` is shared under two binder
+// chains, and its `f` class carries the swap symmetry, so the two chains' bound slots can be
+// identified either way round. Written with pattern slots, `$x $y` against `$w $z` are rigid
+// and nothing matches; the flexible `$?x` spelling stands for the bound variable itself and
+// finds both pairings. `?x == (var $?x)` is how the right-hand side reads the bound variable.
+fn multipat_flexible_bound_slots() {
+    let mut eg: EGraph<Arith2> = EGraph::new(());
+    eg.add_expr(RecExpr::parse("(f (lam $0 (lam $1 (f (var $0) (var $1)))) (lam $0 (lam $1 (f (var $0) (var $1)))))").unwrap());
+    let a = eg.add_expr(RecExpr::parse("(f (var $0) (var $1))").unwrap());
+    let b = eg.add_expr(RecExpr::parse("(f (var $1) (var $0))").unwrap());
+    eg.union(&a, &b);
+
+    let rigid: MultiPattern<Arith2> = MultiPattern::parse(
+        "?out == (f ?l1 ?l2), ?l1 == (lam $x ?b1), ?b1 == (lam $y ?a), ?l2 == (lam $w ?b2), ?b2 == (lam $z ?a)",
+    ).unwrap();
+    assert_eq!(multi_ematch(&rigid, &eg).len(), 0, "pattern slots are rigid");
+
+    let flexible: MultiPattern<Arith2> = MultiPattern::parse(
+        "?out == (f ?l1 ?l2), ?l1 == (lam $?x ?b1), ?b1 == (lam $?y ?a), ?l2 == (lam $?w ?b2), ?b2 == (lam $?z ?a), ?x == (var $?x), ?w == (var $?w)",
+    ).unwrap();
+    assert!(flexible.to_string().contains("$?x"), "the spelling round-trips: {flexible}");
+    // The `f` class's swap symmetry gives each pairing several spellings, so count the
+    // pairings, not the matches.
+    let matches = multi_ematch(&flexible, &eg);
+    let same: Vec<bool> = matches.iter().map(|m| eg.eq(&m["x"], &m["w"])).collect();
+    assert!(same.contains(&true) && same.contains(&false), "both pairings match: {matches:?}");
+}

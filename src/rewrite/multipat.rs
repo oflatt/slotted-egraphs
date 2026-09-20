@@ -10,6 +10,18 @@ pub struct MultiPattern<L: Language> {
     // - nesting depth >1 `(= ?a (f (f ?x)))` can be solved via flattening `(= ?a (f ?b)), (= ?b (f ?x))`.
     // variables are allowed to come up multiple times on the left and right.
     pub(crate) pats: Vec<(PVar, L, Vec<PVar>)>,
+
+    // Slots the pattern writes but does not pin: written `$?x`.
+    //
+    // A written slot is normally a *pattern slot*: rigid, so `(lam $x ?a)` and `(lam $w ?a)`
+    // can never be the same binder. A flexible slot is a name for whatever the e-graph has
+    // there -- a binder's bound slot, or a redundant one -- and so behaves like the fresh
+    // slots `enodes_applied` mints: it can be identified with another flexible slot in
+    // `unify` or `final_refine`, and merged into a pattern slot. That is what a pattern
+    // variable standing in a binder position means; since the variable then names the
+    // bound variable, spell it with an atom `?x == (var $?x)` and use `?x` on the right-hand
+    // side, because the slot's own name does not survive a merge.
+    pub(crate) flexible: HashSet<Slot>,
 }
 
 #[derive(Clone, Debug)]
@@ -40,7 +52,7 @@ pub fn multi_ematch<L: Language>(pat: &MultiPattern<L>, eg: &EGraph<L>) -> Vec<S
 
     for (v, n, ch) in &pat.pats {
         for st in std::mem::take(&mut states) {
-            states.extend(multi_ematch_step(v, n, ch, st, eg));
+            states.extend(multi_ematch_step(v, n, ch, st, eg, &pat.flexible));
         }
     }
 
@@ -69,10 +81,10 @@ fn final_refine(mut state: MultiState) -> Vec<MultiState> {
     vec![state]
 }
 
-fn multi_ematch_step<L: Language>(pv: &PVar, node: &L, children: &[PVar], mut state: MultiState, eg: &EGraph<L>) -> Vec<MultiState> {
+fn multi_ematch_step<L: Language>(pv: &PVar, node: &L, children: &[PVar], mut state: MultiState, eg: &EGraph<L>, flexible: &HashSet<Slot>) -> Vec<MultiState> {
     let mut out = Vec::new();
     for state in multi_ematch_step_class(pv, node, children, state, eg) {
-        out.extend(multi_ematch_step_node(pv, node, children, state, eg));
+        out.extend(multi_ematch_step_node(pv, node, children, state, eg, flexible));
     }
     out
 }
@@ -94,7 +106,7 @@ fn multi_ematch_step_class<L: Language>(pv: &PVar, node: &L, children: &[PVar], 
     out
 }
 
-fn multi_ematch_step_node<L: Language>(pv: &PVar, node: &L, children: &[PVar], mut state: MultiState, eg: &EGraph<L>) -> Vec<MultiState> {
+fn multi_ematch_step_node<L: Language>(pv: &PVar, node: &L, children: &[PVar], mut state: MultiState, eg: &EGraph<L>, flexible: &HashSet<Slot>) -> Vec<MultiState> {
     let gid = &state.subst[pv];
     let mut out = Vec::new();
 
@@ -108,7 +120,7 @@ fn multi_ematch_step_node<L: Language>(pv: &PVar, node: &L, children: &[PVar], m
             let set = n.all_slot_occurrences().into_iter().collect::<HashSet<Slot>>();
             add_disjointness_constraint(set, &mut state);
 
-            let Some(mut state) = matches_raw(node, &n, state.clone()) else { continue };
+            let Some(mut state) = matches_raw(node, &n, state.clone(), flexible) else { continue };
 
             let mut accum = vec![state];
             for (child_pvar, child_gid) in children.iter().zip(n.applied_id_occurrences()) {
@@ -124,7 +136,7 @@ fn multi_ematch_step_node<L: Language>(pv: &PVar, node: &L, children: &[PVar], m
 }
 
 // n1 comes from the pattern, whereas n2 from the e-graph.
-fn matches_raw<L: Language>(n1: &L, n2: &L, mut st: MultiState) -> Option<MultiState> {
+fn matches_raw<L: Language>(n1: &L, n2: &L, mut st: MultiState, flexible: &HashSet<Slot>) -> Option<MultiState> {
     let n1 = nullify_app_ids(n1);
     let n2 = nullify_app_ids(n2);
 
@@ -134,7 +146,10 @@ fn matches_raw<L: Language>(n1: &L, n2: &L, mut st: MultiState) -> Option<MultiS
 
     // as we've done nullify_app_ids, the only remaining slots are the slots not stored in AppliedIds.
     for (x1, y1) in n1.all_slot_occurrences().into_iter().zip(n2.all_slot_occurrences()) {
-        st.pattern_slots.insert(x1);
+        // a flexible slot is not pinned: it stays as free to move as the e-graph's own.
+        if !flexible.contains(&x1) {
+            st.pattern_slots.insert(x1);
+        }
         st = union_slot(x1, y1, st)?;
     }
     Some(st)
