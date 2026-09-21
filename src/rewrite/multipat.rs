@@ -22,6 +22,24 @@ pub struct MultiPattern<L: Language> {
     // bound variable, spell it with an atom `?x == (var $?x)` and use `?x` on the right-hand
     // side, because the slot's own name does not survive a merge.
     pub(crate) flexible: HashSet<Slot>,
+
+    // Slots the pattern writes that may be identified with NOTHING: see `freeze`.
+    pub(crate) frozen: HashSet<Slot>,
+}
+
+impl<L: Language> MultiPattern<L> {
+    /// Keep these slots apart from every other slot of a match.
+    ///
+    /// A written slot is normally free to be identified with a flexible one -- reading a
+    /// binder's bound slot as the name of some free variable is a fine alpha-variant of
+    /// the term matched. It stops being fine when the RIGHT-HAND SIDE binds that slot
+    /// again over something matched outside the binder: `let x = y in (λw. x w)` read
+    /// with `w` as `y` lets `let-lam-diff` build `λy. let x = y in x y`, a capture. So a
+    /// rewrite freezes the slots its right-hand side binds; `unify` and `final_refine`
+    /// then leave them alone, while `matches_raw` still binds each to its own node slot.
+    pub fn freeze(&mut self, slots: impl IntoIterator<Item = Slot>) {
+        self.frozen.extend(slots);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +55,7 @@ struct MultiState {
     // pattern slots can inherit disequality constraints from flexible slots though (without becoming flexible themselves).
 
     pattern_slots: HashSet<Slot>, // the set of pattern slots.
+    frozen: HashSet<Slot>, // pattern slots no merge may touch, see `MultiPattern::freeze`
     diseq_constraints: HashMap<Slot, HashSet<Slot>>,
     subst: Subst,
     slot_uf: HashMap<Slot, Slot>,
@@ -45,6 +64,7 @@ struct MultiState {
 pub fn multi_ematch<L: Language>(pat: &MultiPattern<L>, eg: &EGraph<L>) -> Vec<Subst> {
     let mut states: Vec<MultiState> = vec![MultiState {
         pattern_slots: HashSet::default(),
+        frozen: pat.frozen.clone(),
         diseq_constraints: HashMap::default(),
         subst: Subst::default(),
         slot_uf: HashMap::default(),
@@ -69,6 +89,7 @@ fn final_refine(mut state: MultiState) -> Vec<MultiState> {
     for &x in &slots {
         for &y in &slots {
             if x == y { continue }
+            if state.frozen.contains(&x) || state.frozen.contains(&y) { continue }
             let Some(st_merge) = union_slot(x, y, state.clone()) else { continue };
 
             // NOTE: This code gets reached only very rarely.
@@ -183,6 +204,7 @@ fn unify<L: Language>(x: &AppliedId, y: &AppliedId, mut st: MultiState, eg: &EGr
         let mut out = Vec::new();
 
         for &yy in yonly.iter() {
+            if st.frozen.contains(&xx) || st.frozen.contains(&yy) { continue }
             let st = st.clone();
             if let Some(st) = union_slot(xx, yy, st) {
                 out.extend(unify(x, y, st, eg));

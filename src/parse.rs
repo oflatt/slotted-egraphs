@@ -142,7 +142,7 @@ impl<L: Language> MultiPattern<L> {
             flexible.extend(n.all_slot_occurrences().into_iter().filter(|s| flexible_marker(*s)));
             out.push((v, n, children));
         }
-        Ok(MultiPattern { pats: out, flexible })
+        Ok(MultiPattern { pats: out, flexible, frozen: HashSet::default() })
     }
 }
 

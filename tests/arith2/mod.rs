@@ -212,3 +212,26 @@ fn multipat_flexible_bound_slots() {
     let same: Vec<bool> = matches.iter().map(|m| eg.eq(&m["x"], &m["w"])).collect();
     assert!(same.contains(&true) && same.contains(&false), "one match per pairing: {matches:?}");
 }
+
+#[test]
+// A binder's bound slot may be read as the name of a free variable of the term: matching
+// `(f (lam $0 (sub $0 $0)) (var $2))` with `?l == (lam $y ?body)`, `$y` may be `$2`, and
+// `final_refine` offers that reading beside the plain one. A rewrite whose right-hand side
+// binds `$y` again over `?e` must not take it, or the node it builds captures `?e`; that
+// is what `freeze` is for, and it leaves exactly the plain reading.
+fn multipat_frozen_binder_is_not_identified() {
+    let mut eg: EGraph<Arith2> = EGraph::new(());
+    eg.add_expr(RecExpr::parse("(f (lam $0 (sub (var $0) (var $0))) (var $2))").unwrap());
+    let text = "?p == (f ?l ?e), ?l == (lam $y ?body)";
+
+    let free: MultiPattern<Arith2> = MultiPattern::parse(text).unwrap();
+    let readings = multi_ematch(&free, &eg);
+    assert_eq!(readings.len(), 2, "both readings of the binder: {readings:?}");
+
+    let mut frozen: MultiPattern<Arith2> = MultiPattern::parse(text).unwrap();
+    frozen.freeze([Slot::named("y")]);
+    let readings = multi_ematch(&frozen, &eg);
+    assert_eq!(readings.len(), 1, "only the reading that keeps `$y` its own: {readings:?}");
+    let m = &readings[0];
+    assert!(!m["e"].slots().contains(&Slot::named("y")), "`?e` is not under the binder: {m:?}");
+}
